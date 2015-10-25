@@ -1,0 +1,258 @@
+---
+title: " Qualitative Activity Recognition of Weight Lifting Exercises "
+author: "JL"
+date: "20/10/2015"
+output: html_document
+---
+
+```{r}
+library(caret)
+library(ggplot2)
+```
+
+**LOADING AND READING THE DATA**    
+
+**Loading the training set that will be used, keeping the variables of class `character` as they are:**  
+
+```{r}
+filename <- "training"
+destfile <- paste( "./", filename, sep = "" )  
+fileUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(fileUrl, destfile)
+# reading the file:
+d <- read.csv(destfile, stringsAsFactors = FALSE)
+dim(d)
+```
+
+
+```{r}
+filename <- "testing"
+destfile <- paste( "./", filename, sep = "" )       
+fileUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(fileUrl, destfile)
+# reading the file:
+t0 <- read.csv(destfile, stringsAsFactors = FALSE)
+```
+
+**DATA CLEANING AND EXPLORATORY ANALYSIS **
+
+**Loading now the training set for investigation by leaving the variables of class  `character` to be converted into class `factor`, so as to see the number and the kind of the levels in each factor.**  
+
+```{r}
+filename <- "training"
+destfile <- paste( "./", filename, sep = "" )  
+fileUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(fileUrl, destfile)
+# reading the file:
+df <- read.csv(destfile)
+
+# showing the number and the kind of the levels of some factors:
+str(df[12:17])
+```
+
+
+The first seven columns will be removed as they are not relevant for prediction. However, the sixth column `new_window`, made of levels "no" and "yes", will be removed later as it is useful yet for the steps to come.    
+
+```{r}
+# new_window:number 6
+varNb <- c(1:5,7)
+# new_window will be then the first column of the following data frame d1
+d1 <- d[-varNb]
+```
+
+The following shows that many columns of the  data frame `d1` contain a lot of `NAs`   
+
+```{r}
+nasNb <- sapply(1:ncol(d1), function(i){ sum( is.na(d1[,i]) ) })
+table(nasNb)
+
+nas <- data.frame(indices=1:ncol(d1), nasNb=nasNb)
+ggplot(nas, aes(x=indices, y=nasNb)) + geom_point(color="brown")+
+        labs( x= "column number in the data frame d1", y = "NAs number")
+```
+
+
+Converting  the variables of class character of `d1` (except `new_window` and `classe`) into numeric classes (some of their entries are `""` or `"#DIV/0!"`, whereas the others are supposed to be actually numeric). The  `""` and `"#DIV/0!"` entries will then become `NA`.
+
+```{r,warning=FALSE}
+for( i in 2:( ncol(d1)-1 ) ) {
+        if( class(d1[,i]) == "character" ) {class(d1[,i]) <- "numeric"}
+}
+```
+
+The following shows that many columns in the data frame `d1` contain `NA` at their intersection with a row beginning by "no".  
+
+```{r}
+no <- d1[d1$new_window!="yes", ]
+naNb <- sapply(1: ncol(no), function(i){ sum(is.na(no[,i]))})
+nrow(no)
+table(naNb)
+```
+
+**So there are 100 columns that contain `NA` on each row beginning by "no".**   
+
+The figures in `num_window` show that a window ends with the row "yes".  
+We can guess that these one hundred columns contain, in each row starting with "yes", the results of calculations performed on elements lying in the pertaining  window of other columns.  
+These calculations are min, max, amplitude, variance, standard deviation, average, kurtosis, skewness.  
+
+But these calculations become meaningless since we will not keep the first seven features. These one hundred columns would thereby add more complexity to the model than information that they could provide to it, and we will not keep them either.  
+
+
+```{r}
+ind <- which(naNb==nrow(no))
+# 1:so as to remove the first column new_window
+d2 <- d1[, -c(1,ind)]
+d2$classe <- as.factor(d2$classe)
+```
+
+We already know that the rows "no" of the remaining columns  have no NAs. The following shows that it is the same for their rows "yes":  
+
+```{r}
+sum(!complete.cases(d2))
+```
+
+This shows that there are no zero covariates:  
+```{r}
+nearZeroVar(d2[ ,-ncol(d2)])
+```
+
+There is no severe  class imbalance : 
+```{r}
+table(d2$classe)
+```
+
+Determining highly correlated  variables and removing them so as to reduce pair-wise correlations (cutoff 0.78).   
+```{r}
+cor078Col <- findCorrelation(cor(d2[,-ncol(d2)]), cutoff = 0.78,  names = FALSE, exact = TRUE)
+length(cor078Col)
+colnames(d2)[cor078Col]
+training <- d2[,-cor078Col]
+```
+
+
+Applying to the testing set the same transformations as those previously done on the training set:  
+
+```{r}
+identical(colnames(t0)[-ncol(t0)], colnames(d)[-ncol(d)])
+t1 <- t0[-varNb]
+
+for( i in 2:(ncol(t1)-1) ) {
+        if(class(t1[,i]) == "character") { class(t1[,i]) <- "numeric" }
+}
+
+t2 <- t1[, -c(1,ind)]
+#t2$classe <- as.factor(t2$classe)
+testing <- t2[,-cor078Col]
+identical(colnames(testing)[-ncol(testing)], colnames(training)[-ncol(training)])
+```
+
+**FITTING A STOCHASTIC GRADIENT BOOSTING MODEL**  
+
+**A 5-fold cross-validation is carried out.**  
+
+The observations of the training set are split into 5 equal parts.  
+1000 trees are build on the whole set formed by the observations of 4 of them, then the model built by the trees is applied to the remaining part to make predictions.  
+A first accuracy is given, and Kappa as well. Then the same process is applied to 4 others parts, 5 times in total.  
+The 5 values of Accuracy are averaged, and so for Kappa. Their standard deviation are given as well.  
+They can be seen further below, given by gbmFit.  
+(note: a value for Kappa within the range 0.81–1 means almost perfect agreement)  
+And since two different values are given to interaction.depth, namely 5 then 7, we will get 2 times the values mentioned above.  
+
+On the other hand shrinkage=0.01 allows the trees to be "weak learners"  and n.minobsinnode = 20 is the minimum number of observations in the trees terminal nodes.  
+
+```{r, eval=FALSE}
+fitControl <- trainControl(method = "repeatedcv",number = 5,repeats = 1)
+
+gbmGrid <-  expand.grid(n.trees = 1000,
+                        interaction.depth = c(5, 7),
+                        shrinkage = 0.01,
+                        n.minobsinnode = 20 )
+
+set.seed(1)
+system.time(
+        gbmFit <- train(classe ~ ., data = training,
+                 method = "gbm",
+                 trControl = fitControl,
+                 tuneGrid = gbmGrid)
+             )
+```
+
+```{r,echo=FALSE}
+gbmFit <- readRDS(file="gbmFit2")
+```
+
+
+```{r}
+gbmFit
+```
+
+The metric used to select the optimal model:
+```{r}
+gbmFit$metric
+```
+
+
+Here are the values of Accuracy and Kappa for each of the 5 folds corresponding to the cross-validation carried out for the second value of interaction.depth, that gave the final (=best) model.
+```{r}
+gbmFit$resample
+```
+
+The mean Accuracy and the mean value of Kappa for the final model can be calculated as follows: 
+```{r}
+ak <- gbmFit$resample
+mean(ak[,1])
+sd(ak[,1])
+mean(ak[,2])
+sd(ak[,2])
+```
+
+
+**THE EXPECTED OUT OF SAMPLE ERROR WILL BE CLOSE TO THE MEAN ACCURACY OF THE FINAL MODEL, NAMELY `r round(mean(ak[,1]),2)`. THE STANDARD DEVIATION WILL BE CLOSE TO `r round(sd(ak[,1]),4)`.**  
+
+
+On the other hand the in sample error is:
+```{r}
+trainPred <-predict(gbmFit)
+(inSampEr <-sum(trainPred==training$classe)/length(trainPred))
+```
+
+The in sample error is `r inSampEr`.
+
+The confusionMatrix calculates a cross-tabulation of observed and predicted classes.   
+The predicted classes are all the predictions made during the cross-validation.  
+The observed classes are known,  so it is possible to make this table. The sum of the percentages is 100.
+
+```{r}
+confusionMatrix(gbmFit)
+```
+
+
+variable importance for the train object gbmFit
+```{r}
+varImp(gbmFit)
+```
+
+
+**PREDICTIONS**  
+```{r}
+tg0 <- testing[,-ncol(testing)]
+pred <- predict( gbmFit, newdata = tg0 )
+str(pred)
+# converting pred from class factor to class character
+f <- pred
+pred<- levels(f)[f]
+str(pred)
+```
+
+Creating text files: each of them contain a single capital letter (A, B, C, D, or E) giving the prediction made for the corresponding problem in the test data set. 
+```{r}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(pred)
+```
